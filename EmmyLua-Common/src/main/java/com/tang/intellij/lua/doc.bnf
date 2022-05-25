@@ -35,6 +35,7 @@
 
   tokens = [
         ID="regexp:[A-Za-z0-9_]+"
+        NUM="regexp:[0-9]+"
         AT = '@'
         SHARP = '#'
         EQ = '='
@@ -49,6 +50,9 @@
         RCURLY = "}"
         STRING_LITERAL = "STRING_LITERAL"
         ARR = '[]'
+        LBRACK = '['
+        RBRACK = ']'
+        QM = '?'
         FUN = 'fun'
         VARARG = 'vararg'
         PRIVATE = 'private'
@@ -71,10 +75,12 @@
         TAG_NAME_OVERLOAD = 'overload'
         TAG_NAME_MODULE = 'module'
         TAG_NAME_ENUM = 'enum'
+        TAG_NAME_INTERFACE = 'interface'
         TAG_NAME_SEE = 'see'
         TAG_NAME_GENERIC = 'generic'
         TAG_NAME_ALIAS = 'alias'
         TAG_NAME_SUPPRESS = 'suppress'
+        TAG_NAME_DEPRECATED = 'deprecated'
   ]
   implements("tag.*") = [
     "com.tang.intellij.lua.comment.psi.LuaDocTag"
@@ -96,9 +102,12 @@ private doc_item ::= '@' (tag_param
     | tag_lan
     | tag_overload
     | tag_see
-    | tag_def
     | access_modifier
-    | tag_generic_list)
+    | tag_generic_list
+    | tag_deprecated
+    | tag_def
+    | tag_other
+    )
 
 ty ::= union_ty | function_ty | table_ty | generic_ty | arr_ty | general_ty | par_ty | string_literal_ty {
     implements = ['com.tang.intellij.lua.comment.psi.LuaDocType']
@@ -176,7 +185,9 @@ union_ty ::= ty ('|' ty)+ {
 }
 access_modifier ::= PRIVATE | PUBLIC | PROTECTED | TAG_NAME_PRIVATE | TAG_NAME_PUBLIC | TAG_NAME_PROTECTED
 
-tag_field ::= TAG_NAME_FIELD access_modifier? ('<' class_name_ref '>')? ID ty comment_string? {
+field_index ::= ID | NUM
+
+tag_field ::= TAG_NAME_FIELD access_modifier? ((('<' class_name_ref '>')? ID nullable?)| '[' field_index ']') ty comment_string? {
     pin = 1
     implements = [
         "com.tang.intellij.lua.psi.LuaClassField"
@@ -195,6 +206,7 @@ tag_field ::= TAG_NAME_FIELD access_modifier? ('<' class_name_ref '>')? ID ty co
         toString
         getPresentation
         isDeprecated
+        isNullable
     ]
 }
 
@@ -214,11 +226,13 @@ tag_lan ::= TAG_NAME_LANGUAGE ID comment_string? { pin = 1 }
 
 //@param PARAM_NAME CLASS_REF
 param_name_ref ::= ID {
-    methods = [getReference]
+    methods = [
+        getReference
+    ]
 }
-tag_param ::= TAG_NAME_PARAM param_name_ref ty comment_string? {
+tag_param ::= TAG_NAME_PARAM param_name_ref nullable? ty comment_string? {
     pin = 1
-    methods = [getType]
+    methods = [getType isNullable]
 }
 tag_vararg ::= TAG_NAME_VARARG ty comment_string? {
     pin = 1
@@ -235,7 +249,13 @@ tag_return ::= TAG_NAME_RETURN type_list comment_string? {
 class_name_ref ::= ID {
     methods = [getReference resolveType]
 }
-tag_class ::= (TAG_NAME_CLASS|TAG_NAME_MODULE|TAG_NAME_ENUM) ID (EXTENDS class_name_ref)? comment_string? {
+
+class_name_ref_list ::= class_name_ref (',' class_name_ref)* {
+    pin = 1
+    methods = [getClasses]
+}
+
+tag_class ::= (TAG_NAME_CLASS|TAG_NAME_MODULE|TAG_NAME_ENUM|TAG_NAME_INTERFACE) ID (EXTENDS class_name_ref_list)? comment_string? {
     pin = 2
     implements = [
         "com.tang.intellij.lua.comment.psi.LuaDocPsiElement"
@@ -254,9 +274,10 @@ tag_class ::= (TAG_NAME_CLASS|TAG_NAME_MODULE|TAG_NAME_ENUM) ID (EXTENDS class_n
         toString
         isDeprecated
 
-        superClassNameRef = 'class_name_ref'
+        superClassNameRef = 'class_name_ref_list'
         module = 'TAG_NAME_MODULE'
         enum = 'TAG_NAME_ENUM'
+        interface = 'TAG_NAME_INTERFACE'
     ]
 }
 
@@ -317,5 +338,17 @@ tag_alias ::= TAG_NAME_ALIAS ID ty {
 }
 
 tag_suppress ::= TAG_NAME_SUPPRESS ID (',' ID)* {
+    pin = 1
+}
+
+tag_deprecated ::= TAG_NAME_DEPRECATED {
+    pin = 1
+}
+
+tag_other ::= TAG_NAME comment_string? {
+    pin = 1
+}
+
+nullable ::= QM{
     pin = 1
 }

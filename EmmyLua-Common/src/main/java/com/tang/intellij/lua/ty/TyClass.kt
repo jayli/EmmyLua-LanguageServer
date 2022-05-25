@@ -16,6 +16,7 @@
 
 package com.tang.intellij.lua.ty
 
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.stubs.StubInputStream
@@ -30,18 +31,52 @@ import com.tang.intellij.lua.psi.*
 import com.tang.intellij.lua.psi.search.LuaClassInheritorsSearch
 import com.tang.intellij.lua.psi.search.LuaShortNamesManager
 import com.tang.intellij.lua.search.SearchContext
+import com.tang.intellij.lua.stubs.index.LuaClassMemberIndex
+import com.tang.lsp.nameRange
 
 interface ITyClass : ITy {
     val className: String
     val varName: String
     var superClassName: String?
+    var interfaceNames: List<String>?
     var aliasName: String?
+    var isInterface: Boolean
     fun processAlias(processor: Processor<String>): Boolean
     fun lazyInit(searchContext: SearchContext)
     fun processMembers(context: SearchContext, processor: (ITyClass, LuaClassMember) -> Unit, deep: Boolean = true)
     fun processMembers(context: SearchContext, processor: (ITyClass, LuaClassMember) -> Unit) {
         processMembers(context, processor, true)
     }
+
+    fun processVisibleMembers(context: SearchContext, contextTy: ITy, processor: (ITyClass, LuaClassMember) -> Unit) {
+        val noVisibleSet = mutableSetOf<String>()
+        val list = mutableListOf<LuaClassMember>()
+
+        processMembers(context) { curType, member ->
+            if (curType.isVisibleInScope(
+                    context.project,
+                    contextTy,
+                    member.visibility
+                )
+            ) {
+                list.add(member)
+            } else {
+                member.name?.let {
+                    noVisibleSet.add(it)
+                }
+            }
+        }
+
+        for (member in list) {
+            val name = member.name
+            if (name != null && !noVisibleSet.contains(name)) {
+                processor(this, member)
+            }
+        }
+    }
+
+    fun getIndexResultType(element: LuaLiteralExpr): ITy?
+    fun findOriginMember(name: String, searchContext: SearchContext): LuaClassMember?
     fun findMember(name: String, searchContext: SearchContext): LuaClassMember?
     fun findMemberType(name: String, searchContext: SearchContext): ITy?
     fun findSuperMember(name: String, searchContext: SearchContext): LuaClassMember?
@@ -60,7 +95,12 @@ fun ITyClass.isVisibleInScope(project: Project, contextTy: ITy, visibility: Visi
             if (it == this)
                 isVisible = true
             else if (visibility == Visibility.PROTECTED) {
-                isVisible = LuaClassInheritorsSearch.isClassInheritFrom(GlobalSearchScope.projectScope(project), project, className, it.className)
+                isVisible = LuaClassInheritorsSearch.isClassInheritFrom(
+                    GlobalSearchScope.projectScope(project),
+                    project,
+                    className,
+                    it.className
+                )
             }
         }
         !isVisible
@@ -68,12 +108,14 @@ fun ITyClass.isVisibleInScope(project: Project, contextTy: ITy, visibility: Visi
     return isVisible
 }
 
-abstract class TyClass(override val className: String,
-                       override val varName: String = "",
-                       override var superClassName: String? = null
+abstract class TyClass(
+    override val className: String,
+    override val varName: String = "",
+    override var superClassName: String? = null,
+    override var interfaceNames: List<String>? = null,
+    override var isInterface: Boolean = false
 ) : Ty(TyKind.Class), ITyClass {
     final override var aliasName: String? = null
-
     private var _lazyInitialized: Boolean = false
 
     override fun equals(other: Any?): Boolean {
@@ -122,6 +164,34 @@ abstract class TyClass(override val className: String,
         }
     }
 
+    override fun getIndexResultType(element: LuaLiteralExpr): ITy? {
+
+        val context = SearchContext.get(element.project)
+        when (element.kind) {
+            LuaLiteralKind.Number -> {
+                var member = LuaClassMemberIndex.find(this, "[${element.text}]", context)
+                if (member == null) {
+                    member = LuaClassMemberIndex.find(this, "[number]", context)
+                }
+
+                return member?.guessType(context)
+            }
+            LuaLiteralKind.String -> {
+                var member = LuaClassMemberIndex.find(this, element.text, context)
+                if (member == null) {
+                    member = LuaClassMemberIndex.find(this, "[string]", context)
+                }
+
+                return member?.guessType(context)
+            }
+        }
+        return null
+    }
+
+    override fun findOriginMember(name: String, searchContext: SearchContext): LuaClassMember? {
+        return LuaClassMemberIndex.findOrigin(this, name, searchContext)
+    }
+
     override fun findMember(name: String, searchContext: SearchContext): LuaClassMember? {
         return LuaShortNamesManager.getInstance(searchContext.project).findMember(this, name, searchContext)
     }
@@ -157,6 +227,8 @@ abstract class TyClass(override val className: String,
             val tyClass = classDef.type
             aliasName = tyClass.aliasName
             superClassName = tyClass.superClassName
+            interfaceNames = tyClass.interfaceNames
+            isInterface = tyClass.isInterface
         }
     }
 
@@ -164,14 +236,35 @@ abstract class TyClass(override val className: String,
         lazyInit(context)
         val clsName = superClassName
         if (clsName != null && clsName != className) {
-            return Ty.getBuiltin(clsName) ?: LuaShortNamesManager.getInstance(context.project).findClass(clsName, context)?.type
+            return Ty.getBuiltin(clsName) ?: LuaShortNamesManager.getInstance(context.project)
+                .findClass(clsName, context)?.type
         }
         return null
+    }
+
+    override fun getInterfaces(context: SearchContext): List<ITyClass>? {
+        if (interfaceNames == null) {
+            return null
+        }
+
+        val result = mutableListOf<ITyClass>()
+        interfaceNames!!.forEach {
+            val ty = Ty.getBuiltin(it) ?: LuaShortNamesManager.getInstance(context.project)
+                .findClass(it, context)?.type
+            if (ty != null && ty is ITyClass) {
+                ty.lazyInit(context)
+                if (ty.isInterface) {
+                    result.add(ty)
+                }
+            }
+        }
+        return result
     }
 
     override fun subTypeOf(other: ITy, context: SearchContext, strict: Boolean): Boolean {
         // class extends table
         if (other == Ty.TABLE) return true
+        if (other is TyGeneric && other.base == Ty.TABLE) return true
         if (super.subTypeOf(other, context, strict)) return true
 
         // Lazy init for superclass
@@ -182,11 +275,44 @@ abstract class TyClass(override val className: String,
             isSubType = superType == other
             !isSubType
         }
+
+        if (!isSubType && (other is ITyClass)) {
+            other.lazyInit(context)
+            if (other.isInterface) {
+                isSubType = true
+                other.processMembers(context, { _, member ->
+                    if (member.name == null) {
+                        isSubType = false
+                        return@processMembers
+                    }
+                    val thisMember = findMember(member.name!!, context)
+                    if (thisMember == null) {
+                        isSubType = false
+                        return@processMembers
+                    }
+
+                    val thisMemberType = thisMember.guessType(context)
+                    val interfaceMemberType = member.guessType(context)
+                    if (!thisMemberType.subTypeOf(interfaceMemberType, context, strict)) {
+                        isSubType = false
+                        return@processMembers
+                    }
+
+                }, false)
+            }
+        }
+
         return isSubType
     }
 
     override fun substitute(substitutor: ITySubstitutor): ITy {
         return substitutor.substitute(this)
+    }
+
+    fun isEnum(project: Project, searchContext: SearchContext): Boolean{
+        val enumClass = LuaShortNamesManager.getInstance(project)
+            .findClass(className, searchContext)
+        return enumClass is LuaDocTagClass && enumClass.enum != null
     }
 
     companion object {
@@ -214,7 +340,11 @@ abstract class TyClass(override val className: String,
             return g
         }
 
-        fun processSuperClass(start: ITyClass, searchContext: SearchContext, processor: (ITyClass) -> Boolean): Boolean {
+        fun processSuperClass(
+            start: ITyClass,
+            searchContext: SearchContext,
+            processor: (ITyClass) -> Boolean
+        ): Boolean {
             val processedName = mutableSetOf<String>()
             var cur: ITy? = start
             while (cur != null) {
@@ -226,9 +356,49 @@ abstract class TyClass(override val className: String,
                     }
                     if (!processor(cls))
                         return false
+                    if (cls.isInterface) {
+                        break
+                    }
                 }
                 cur = cls
             }
+            return processInterface(start, searchContext, processor)
+        }
+
+        fun processInterface(
+            cls: ITyClass,
+            searchContext: SearchContext,
+            processor: (ITyClass) -> Boolean
+        ): Boolean {
+            val processedName = mutableSetOf<String>()
+            return innerProcessorInterface(cls, searchContext, processedName, processor)
+        }
+
+        private fun innerProcessorInterface(
+            cls: ITyClass,
+            searchContext: SearchContext,
+            processName: MutableSet<String>,
+            processor: (ITyClass) -> Boolean
+        ): Boolean {
+            val interfaces = cls.getInterfaces(searchContext)
+            if (interfaces != null) {
+                for (tyInterface in interfaces) {
+                    if (tyInterface is ITyClass) {
+                        if (!processName.add(tyInterface.className)) {
+                            continue
+                        }
+
+                        if (!processor(tyInterface)) {
+                            return false
+                        }
+
+                        if (!innerProcessorInterface(tyInterface, searchContext, processName, processor)) {
+                            return false
+                        }
+                    }
+                }
+            }
+
             return true
         }
     }
@@ -238,20 +408,30 @@ class TyPsiDocClass(tagClass: LuaDocTagClass) : TyClass(tagClass.name) {
 
     init {
         val supperRef = tagClass.superClassNameRef
-        if (supperRef != null)
-            superClassName = supperRef.text
+        if (supperRef != null) {
+            val classList = supperRef.classNameRefList
+            if (classList.size != 0) {
+                superClassName = classList[0].text
+                interfaceNames = classList.map { it.text }
+            }
+        }
+        if (tagClass.`interface` != null) {
+            isInterface = true
+        }
+
         aliasName = tagClass.aliasName
     }
 
     override fun doLazyInit(searchContext: SearchContext) {}
 }
 
-open class TySerializedClass(name: String,
-                             varName: String = name,
-                             supper: String? = null,
-                             alias: String? = null,
-                             flags: Int = 0)
-    : TyClass(name, varName, supper) {
+open class TySerializedClass(
+    name: String,
+    varName: String = name,
+    supper: String? = null,
+    alias: String? = null,
+    flags: Int = 0
+) : TyClass(name, varName, supper) {
     init {
         aliasName = alias
         this.flags = flags
@@ -269,11 +449,13 @@ open class TySerializedClass(name: String,
 //todo Lazy class ty
 class TyLazyClass(name: String) : TySerializedClass(name)
 
-fun createSerializedClass(name: String,
-                          varName: String = name,
-                          supper: String? = null,
-                          alias: String? = null,
-                          flags: Int = 0): TyClass {
+fun createSerializedClass(
+    name: String,
+    varName: String = name,
+    supper: String? = null,
+    alias: String? = null,
+    flags: Int = 0
+): TyClass {
     val list = name.split("|")
     if (list.size == 3) {
         val type = list[0].toInt()
@@ -324,7 +506,11 @@ class TyTable(val table: LuaTableExpr) : TyClass(getTableTypeName(table)) {
 
     override fun subTypeOf(other: ITy, context: SearchContext, strict: Boolean): Boolean {
         // Empty list is a table, but subtype of all lists
-        return super.subTypeOf(other, context, strict) || other == Ty.TABLE || (other is TyArray && table.tableFieldList.size == 0)
+        return super.subTypeOf(
+            other,
+            context,
+            strict
+        ) || other == Ty.TABLE || (other is TyArray && table.tableFieldList.size == 0)
     }
 }
 
@@ -363,11 +549,13 @@ object TyClassSerializer : TySerializer<ITyClass>() {
         val varName = stream.readName()
         val superName = stream.readName()
         val aliasName = stream.readName()
-        return createSerializedClass(StringRef.toString(className),
-                StringRef.toString(varName),
-                StringRef.toString(superName),
-                StringRef.toString(aliasName),
-                flags)
+        return createSerializedClass(
+            StringRef.toString(className),
+            StringRef.toString(varName),
+            StringRef.toString(superName),
+            StringRef.toString(aliasName),
+            flags
+        )
     }
 
     override fun serializeTy(ty: ITyClass, stream: StubOutputStream) {

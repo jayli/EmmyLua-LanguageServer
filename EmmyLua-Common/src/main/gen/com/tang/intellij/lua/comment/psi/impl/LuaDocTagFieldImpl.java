@@ -36,6 +36,7 @@ public class LuaDocTagFieldImpl extends StubBasedPsiElementBase<LuaDocTagFieldSt
     visitor.visitTagField(this);
   }
 
+  @Override
   public void accept(@NotNull PsiElementVisitor visitor) {
     if (visitor instanceof LuaDocVisitor) accept((LuaDocVisitor)visitor);
     else super.accept(visitor);
@@ -61,6 +62,18 @@ public class LuaDocTagFieldImpl extends StubBasedPsiElementBase<LuaDocTagFieldSt
 
   @Override
   @Nullable
+  public LuaDocFieldIndex getFieldIndex() {
+    return PsiTreeUtil.getChildOfType(this, LuaDocFieldIndex.class);
+  }
+
+  @Override
+  @Nullable
+  public LuaDocNullable getNullable() {
+    return PsiTreeUtil.getChildOfType(this, LuaDocNullable.class);
+  }
+
+  @Override
+  @Nullable
   public LuaDocTy getTy() {
     return PsiTreeUtil.getChildOfType(this, LuaDocTy.class);
   }
@@ -71,52 +84,67 @@ public class LuaDocTagFieldImpl extends StubBasedPsiElementBase<LuaDocTagFieldSt
     return findChildByType(ID);
   }
 
+  @Override
   @NotNull
   public ITy guessParentType(@NotNull SearchContext context) {
     return LuaDocPsiImplUtilKt.guessParentType(this, context);
   }
 
+  @Override
   @NotNull
   public Visibility getVisibility() {
     return LuaDocPsiImplUtilKt.getVisibility(this);
   }
 
+  @Override
   @Nullable
   public PsiElement getNameIdentifier() {
     return LuaDocPsiImplUtilKt.getNameIdentifier(this);
   }
 
+  @Override
   @NotNull
   public PsiElement setName(@NotNull String newName) {
     return LuaDocPsiImplUtilKt.setName(this, newName);
   }
 
+  @Override
   @Nullable
   public String getName() {
     return LuaDocPsiImplUtilKt.getName(this);
   }
 
+  @Override
   public int getTextOffset() {
     return LuaDocPsiImplUtilKt.getTextOffset(this);
   }
 
+  @Override
   @Nullable
   public String getFieldName() {
     return LuaDocPsiImplUtilKt.getFieldName(this);
   }
 
+  @Override
   @NotNull
   public String toString() {
     return LuaDocPsiImplUtilKt.toString(this);
   }
 
+  @Override
   @NotNull
   public ItemPresentation getPresentation() {
     return LuaDocPsiImplUtilKt.getPresentation(this);
   }
 
+  @Override
   public boolean isDeprecated() {
     return LuaDocPsiImplUtilKt.isDeprecated(this);
+  }
+
+  @Override
+  public boolean isNullable() {
+    return LuaDocPsiImplUtilKt.isNullable(this);
   }
 
 }

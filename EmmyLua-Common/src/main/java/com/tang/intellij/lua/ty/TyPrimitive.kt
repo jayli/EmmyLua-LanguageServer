@@ -51,6 +51,14 @@ class TyPrimitiveClass(override val primitiveKind: TyPrimitiveKind,
         // Handle unions, subtype if subtype of any of the union components.
         if (other is TyUnion) return other.getChildTypes().any { type -> subTypeOf(type, context, strict) }
 
+        if(other is TySerializedGeneric){
+            return this == other.base
+        }
+
+        if(other is TyStringLiteral){
+            return true
+        }
+
         return this == other
     }
 

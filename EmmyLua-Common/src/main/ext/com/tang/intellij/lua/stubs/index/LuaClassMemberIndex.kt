@@ -25,6 +25,7 @@ import com.tang.intellij.lua.psi.LuaTableField
 import com.tang.intellij.lua.search.SearchContext
 import com.tang.intellij.lua.stubs.StubKeys
 import com.tang.intellij.lua.ty.ITyClass
+import com.tang.intellij.lua.ty.TyClass
 import com.tang.intellij.lua.ty.TyParameter
 
 class LuaClassMemberIndex : StubIndex<Int, LuaClassMember>() {
@@ -40,7 +41,13 @@ class LuaClassMemberIndex : StubIndex<Int, LuaClassMember>() {
             return ContainerUtil.process(all, processor)
         }
 
-        fun process(className: String, fieldName: String, context: SearchContext, processor: Processor<LuaClassMember>, deep: Boolean = true): Boolean {
+        fun process(
+            className: String,
+            fieldName: String,
+            context: SearchContext,
+            processor: Processor<LuaClassMember>,
+            deep: Boolean = true
+        ): Boolean {
             val key = "$className*$fieldName"
             if (!process(key, context, processor))
                 return false
@@ -57,10 +64,48 @@ class LuaClassMemberIndex : StubIndex<Int, LuaClassMember>() {
                     if (!notFound)
                         return false
 
-                    // from supper
+                    var founded = false
+                    TyClass.processSuperClass(type, context) { superType ->
+                        if(process(superType.className, fieldName, context, processor, false)){
+                            founded = true
+                        }
+                        true
+                    }
+                    return founded
+                }
+            }
+            return true
+        }
+
+        fun processOrigin(
+            className: String,
+            fieldName: String,
+            context: SearchContext,
+            processor: Processor<LuaClassMember>,
+            deep: Boolean = true
+        ): Boolean {
+            val key = "$className*$fieldName"
+            if (!process(key, context, processor))
+                return false
+
+            if (deep) {
+                val classDef = LuaClassIndex.find(className, context)
+                if (classDef != null) {
+                    val type = classDef.type
+                    // from alias
+                    type.lazyInit(context)
+                    val notFound = type.processAlias(Processor {
+                        process(it, fieldName, context, processor, false)
+                    })
+                    if (!notFound)
+                        return false
+
                     val superClassName = type.superClassName
-                    if (superClassName != null && superClassName != className) {
-                        return process(superClassName, fieldName, context, processor)
+                    if(superClassName != null) {
+                        val superClass = LuaClassIndex.find(superClassName, context)
+                        if(superClass is TyClass && !superClass.isInterface){
+                            return process(superClassName, fieldName, context, processor, true)
+                        }
                     }
                 }
             }
@@ -93,7 +138,38 @@ class LuaClassMemberIndex : StubIndex<Int, LuaClassMember>() {
             return perfect
         }
 
-        fun processAll(type: ITyClass, fieldName: String, context: SearchContext, processor: Processor<LuaClassMember>) {
+        fun findOrigin(type: ITyClass, fieldName: String, context: SearchContext): LuaClassMember? {
+            var perfect: LuaClassMember? = null
+            var docField: LuaDocTagField? = null
+            var tableField: LuaTableField? = null
+            processOrigin(type.className, fieldName, context,  {
+                when (it) {
+                    is LuaDocTagField -> {
+                        docField = it
+                        false
+                    }
+                    is LuaTableField -> {
+                        tableField = it
+                        true
+                    }
+                    else -> {
+                        if (perfect == null)
+                            perfect = it
+                        true
+                    }
+                }
+            })
+            if (docField != null) return docField
+            if (tableField != null) return tableField
+            return perfect
+        }
+
+        fun processAll(
+            type: ITyClass,
+            fieldName: String,
+            context: SearchContext,
+            processor: Processor<LuaClassMember>
+        ) {
             if (type is TyParameter)
                 type.superClassName?.let { process(it, fieldName, context, processor) }
             else process(type.className, fieldName, context, processor)
@@ -108,7 +184,12 @@ class LuaClassMemberIndex : StubIndex<Int, LuaClassMember>() {
             }
         }
 
-        fun findMethod(className: String, memberName: String, context: SearchContext, deep: Boolean = true): LuaClassMethod? {
+        fun findMethod(
+            className: String,
+            memberName: String,
+            context: SearchContext,
+            deep: Boolean = true
+        ): LuaClassMethod? {
             var target: LuaClassMethod? = null
             process(className, memberName, context, Processor {
                 if (it is LuaClassMethod) {

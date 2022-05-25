@@ -4,6 +4,7 @@ import com.google.gson.*
 import com.tang.intellij.lua.IVSCodeSettings
 import com.tang.intellij.lua.project.LuaSettings
 import com.tang.vscode.diagnostics.DiagnosticsOptions
+import com.tang.vscode.diagnostics.InspectionsLevel
 import com.tang.vscode.formatter.FormattingOptions
 import com.yevdo.jwildcard.JWildcard
 
@@ -72,38 +73,6 @@ object VSCodeSettings : IVSCodeSettings {
         // show codeLens
         myShowCodeLens = path("emmylua.codeLens")?.asBoolean == true
 
-        path("emmylua.format.indentCount")?.asInt?.let {
-            if (it > 0) {
-                FormattingOptions.indent = it
-            }
-        }
-
-        path("emmylua.format.tableLineWidth")?.asInt?.let {
-            if (it > 0) {
-                FormattingOptions.tableLineWidth = it
-            }
-        }
-
-        path("emmylua.format.callExprAlignToFirstArg")?.asBoolean?.let {
-            FormattingOptions.callExprAlignToFirstArg = it
-        }
-
-        path("emmylua.format.functionLineSpacing")?.asInt?.let {
-            if (it > 0) {
-                FormattingOptions.functionSpacing = it
-            }
-        }
-
-        path("emmylua.format.loopLineSpacing")?.asInt?.let {
-            if (it > 0) {
-                FormattingOptions.loopSpacing = it
-            }
-        }
-
-        path("emmylua.format.blankBeforeFirstArg")?.asBoolean?.let {
-            FormattingOptions.blankBeforeFirstArg = it
-        }
-
         path("emmylua.hint.paramHint")?.asBoolean?.let {
             LuaSettings.instance.paramHint = it
         }
@@ -116,6 +85,10 @@ object VSCodeSettings : IVSCodeSettings {
             LuaSettings.instance.varargHint = it
         }
 
+        path("emmylua.hint.overrideHint")?.asBoolean?.let {
+            LuaSettings.instance.overrideHint = it
+        }
+
         path("emmylua.constructorNames")?.asString?.let {
             LuaSettings.instance.constructorNames = it.split(";").filter { it.isNotEmpty() }.toTypedArray()
         }
@@ -124,19 +97,32 @@ object VSCodeSettings : IVSCodeSettings {
             LuaSettings.instance.requireLikeFunctions = it.split(";").filter { it.isNotEmpty() }.toTypedArray()
         }
 
-        path("emmylua.diagnostics.parameterValidation")?.asBoolean?.let {
-            DiagnosticsOptions.parameterValidation = it
-        }
-        path("emmylua.diagnostics.anyTypeCanAssignToAnyDefineType")?.asBoolean?.let {
+
+        path("emmylua.typeSafety.anyTypeCanAssignToAnyDefineType")?.asBoolean?.let {
             DiagnosticsOptions.anyTypeCanAssignToAnyDefineType = it
         }
-        path("emmylua.diagnostics.defineAnyTypeCanBeAssignedByAnyVariable")?.asBoolean?.let {
+        path("emmylua.typeSafety.defineAnyTypeCanBeAssignedByAnyVariable")?.asBoolean?.let {
             DiagnosticsOptions.defineAnyTypeCanBeAssignedByAnyVariable = it
         }
-        path("emmylua.diagnostics.defineTypeCanReceiveNilType")?.asBoolean?.let {
+        path("emmylua.typeSafety.defineTypeCanReceiveNilType")?.asBoolean?.let {
             DiagnosticsOptions.defineTypeCanReceiveNilType = it
         }
 
+        path("emmylua.inspections.parameterValidation")?.asString?.let {
+            DiagnosticsOptions.parameterValidation = InspectionsLevel.valueOf(it)
+        }
+        path("emmylua.inspections.fieldValidation")?.asString?.let {
+            DiagnosticsOptions.fieldValidation = InspectionsLevel.valueOf(it)
+        }
+        path("emmylua.inspections.undeclaredVariable")?.asString?.let {
+            DiagnosticsOptions.undeclaredVariable = InspectionsLevel.valueOf(it)
+        }
+        path("emmylua.inspections.assignValidation")?.asString?.let {
+            DiagnosticsOptions.assignValidation = InspectionsLevel.valueOf(it)
+        }
+        path("emmylua.inspections.deprecated")?.asBoolean?.let {
+            DiagnosticsOptions.deprecated = InspectionsLevel.Warning
+        }
 
         return SettingsUpdateResult(associationChanged)
     }

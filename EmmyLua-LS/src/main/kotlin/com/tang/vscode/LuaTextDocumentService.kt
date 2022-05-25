@@ -13,15 +13,13 @@ import com.tang.intellij.lua.Constants
 import com.tang.intellij.lua.comment.psi.*
 import com.tang.intellij.lua.comment.psi.api.LuaComment
 import com.tang.intellij.lua.editor.completion.CompletionService
+import com.tang.intellij.lua.editor.completion.LuaLookupElement
 import com.tang.intellij.lua.editor.completion.asCompletionItem
 import com.tang.intellij.lua.project.LuaSettings
 import com.tang.intellij.lua.psi.*
 import com.tang.intellij.lua.reference.ReferencesSearch
 import com.tang.intellij.lua.search.SearchContext
-import com.tang.intellij.lua.ty.ITyFunction
-import com.tang.intellij.lua.ty.findPerfectSignature
-import com.tang.intellij.lua.ty.hasVarargs
-import com.tang.intellij.lua.ty.process
+import com.tang.intellij.lua.ty.*
 import com.tang.lsp.ILuaFile
 import com.tang.lsp.getRangeInFile
 import com.tang.lsp.nameRange
@@ -73,6 +71,7 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
         val notUse = mutableListOf<TextRange>()
         val paramHints = mutableListOf<RenderRange>()
         val localHints = mutableListOf<RenderRange>()
+        val overrideHint = mutableListOf<RenderRange>()
 
         // 认为所有local名称定义一开始都是未使用的
         val psiNotUse = mutableSetOf<PsiElement>()
@@ -130,6 +129,37 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
                 o.acceptChildren(this)
             }
 
+            override fun visitClassMethodDef(o: LuaClassMethodDef) {
+                if (LuaSettings.instance.overrideHint) {
+                    val context = SearchContext.get(o.project)
+                    val classType = o.guessClassType(context)
+                    if (classType != null) {
+                        TyClass.processSuperClass(classType, context) { sup ->
+                            val id = o.classMethodName.id
+                            if (id != null) {
+                                val member = sup.findMember(id.text, context)
+                                if (member != null) {
+                                    val funcBody = o.children.find { it is LuaFuncBody }
+                                    if (funcBody is LuaFuncBody) {
+                                        var fchild = funcBody.firstChild
+                                        while (fchild != funcBody.lastChild) {
+                                            if (fchild.text == ")") {
+                                                overrideHint.add(RenderRange(fchild.nameRange!!.toRange(file), null))
+                                                return@processSuperClass true
+                                            }
+
+                                            fchild = fchild.nextSibling
+                                        }
+                                    }
+                                }
+                            }
+                            true
+                        }
+                    }
+                }
+                o.acceptChildren(this)
+            }
+
             override fun visitNameDef(o: LuaNameDef) {
                 psiNotUse.add(o)
             }
@@ -160,10 +190,10 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
                                             }
                                             else -> {
                                                 localHints.add(
-                                                        RenderRange(
-                                                                nameRange.toRange(file),
-                                                                displayName.substring(0, unexpectedNameIndex)
-                                                        )
+                                                    RenderRange(
+                                                        nameRange.toRange(file),
+                                                        displayName.substring(0, unexpectedNameIndex)
+                                                    )
                                                 )
                                             }
                                         }
@@ -188,9 +218,9 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
                                 activeParameter++
                                 nCommas++
                             } else if (child.node.elementType == LuaTypes.LITERAL_EXPR
-                                    || child.node.elementType == LuaTypes.TABLE_EXPR
-                                    || child.node.elementType == LuaTypes.CLOSURE_EXPR
-                                    || child.node.elementType == LuaTypes.BINARY_EXPR
+                                || child.node.elementType == LuaTypes.TABLE_EXPR
+                                || child.node.elementType == LuaTypes.CLOSURE_EXPR
+                                || child.node.elementType == LuaTypes.BINARY_EXPR
                             ) {
                                 paramHints.add(RenderRange(child.textRange.toRange(file), null))
                                 literalMap[activeParameter] = paramHints.size - 1;
@@ -203,43 +233,25 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
                     callExpr.guessParentType(SearchContext.get(callExpr.project)).let { parentType ->
                         parentType.each { ty ->
                             if (ty is ITyFunction) {
-                                val active = ty.findPerfectSignature(nCommas + 1)
-                                ty.process(Processor { sig ->
-                                    if (sig == active) {
-                                        var index = 0;
+                                val sig = ty.findPerfectSignature(callExpr)
+                                var index = 0;
 
-                                        if (sig.colonCall && callExpr.isMethodDotCall) {
-                                            literalMap[index]?.let {
-                                                paramHints[it].hint = "self"
-                                            }
-                                            index++
-                                        }
-                                        var skipSelf = false
-                                        sig.params.forEach { pi ->
-                                            if (index == 0 && !skipSelf && !sig.colonCall && callExpr.isMethodColonCall) {
-                                                skipSelf = true
-                                            } else {
-                                                literalMap[index]?.let {
-                                                    paramHints[it].hint = pi.name
-                                                }
-                                                index++
-                                            }
-                                        }
-
-                                        if (sig.hasVarargs() && LuaSettings.instance.varargHint) {
-                                            for (paramIndex in literalMap.keys) {
-                                                if (paramIndex >= index) {
-                                                    literalMap[paramIndex]?.let {
-                                                        paramHints[it].hint = "var" + (paramIndex - index).toString()
-                                                    }
-                                                }
-                                            }
-                                        }
-
+                                sig.params.forEach { pi ->
+                                    literalMap[index]?.let {
+                                        paramHints[it].hint = pi.name
                                     }
+                                    index++
+                                }
 
-                                    true
-                                })
+                                if (sig.hasVarargs() && LuaSettings.instance.varargHint) {
+                                    for (paramIndex in literalMap.keys) {
+                                        if (paramIndex >= index) {
+                                            literalMap[paramIndex]?.let {
+                                                paramHints[it].hint = "var" + (paramIndex - index).toString()
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -308,6 +320,10 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
         if (localHints.isNotEmpty()) {
             all.add(Annotator(uri, localHints, AnnotatorType.LocalHint))
         }
+        if (overrideHint.isNotEmpty()) {
+            all.add(Annotator(uri, overrideHint, AnnotatorType.OverrideHint))
+        }
+
         return all
     }
 
@@ -321,7 +337,7 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
                         val position = arr[1].toInt()
                         file.psi?.findElementAt(position)?.let { psi ->
                             PsiTreeUtil.getParentOfType(psi, LuaClassMember::class.java)?.let { member ->
-                                val doc = documentProvider.generateDoc(member, member)
+                                val doc = documentProvider.generateDoc(member)
                                 val content = MarkupContent()
                                 content.kind = "markdown"
                                 content.value = doc
@@ -335,43 +351,45 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
         }
     }
 
-    override fun hover(position: TextDocumentPositionParams): CompletableFuture<Hover?> {
+    override fun hover(params: HoverParams?): CompletableFuture<Hover?> {
         return computeAsync {
             var hover: Hover? = null
-
-            val file = workspace.findFile(position.textDocument.uri)
-            if (file is ILuaFile) {
-                val pos = file.getPosition(position.position.line, position.position.character)
-                val element = TargetElementUtil.findTarget(file.psi, pos)
-                if (element != null) {
-                    val ref = element.reference?.resolve() ?: element
-                    val doc = documentProvider.generateDoc(ref, element)
-                    if (doc != null)
-                        hover = Hover(listOf(Either.forLeft(doc)))
+            if (params != null) {
+                val file = workspace.findFile(params.textDocument.uri)
+                if (file is ILuaFile) {
+                    val pos = file.getPosition(params.position.line, params.position.character)
+                    val element = TargetElementUtil.findTarget(file.psi, pos)
+                    if (element != null) {
+                        val ref = element.reference?.resolve() ?: element
+                        val doc = documentProvider.generateDoc(ref)
+                        if (doc != null)
+                            hover = Hover(listOf(Either.forLeft(doc)))
+                    }
                 }
             }
-
             hover
         }
     }
 
-    override fun documentHighlight(position: TextDocumentPositionParams): CompletableFuture<MutableList<out DocumentHighlight>> {
+    override fun documentHighlight(params: DocumentHighlightParams?): CompletableFuture<MutableList<out DocumentHighlight>?> {
         return computeAsync {
             val list = mutableListOf<DocumentHighlight>()
-            withPsiFile(position) { file, psiFile, i ->
-                val target = TargetElementUtil.findTarget(psiFile, i)
-                if (target != null) {
-                    val def = target.reference?.resolve() ?: target
+            if (params != null) {
+                withPsiFile(params.textDocument, params.position) { file, psiFile, i ->
+                    val target = TargetElementUtil.findTarget(psiFile, i)
+                    if (target != null) {
+                        val def = target.reference?.resolve() ?: target
 
-                    // self highlight
-                    if (def.containingFile == psiFile) {
-                        def.nameRange?.let { range -> list.add(DocumentHighlight(range.toRange(file))) }
-                    }
+                        // self highlight
+                        if (def.containingFile == psiFile) {
+                            def.nameRange?.let { range -> list.add(DocumentHighlight(range.toRange(file))) }
+                        }
 
-                    // references highlight
-                    val search = ReferencesSearch.search(def, GlobalSearchScope.fileScope(psiFile))
-                    search.forEach { reference ->
-                        list.add(DocumentHighlight(reference.getRangeInFile(file)))
+                        // references highlight
+                        val search = ReferencesSearch.search(def, GlobalSearchScope.fileScope(psiFile))
+                        search.forEach { reference ->
+                            list.add(DocumentHighlight(reference.getRangeInFile(file)))
+                        }
                     }
                 }
             }
@@ -383,27 +401,29 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
         TODO()
     }
 
-    override fun definition(position: TextDocumentPositionParams): CompletableFuture<MutableList<out Location>> {
+    override fun definition(params: DefinitionParams?): CompletableFuture<Either<MutableList<out Location>, MutableList<out LocationLink>>?> {
         return computeAsync {
             val list = mutableListOf<Location>()
-
-            withPsiFile(position) { _, psiFile, i ->
-                val target = TargetElementUtil.findTarget(psiFile, i)
-                val resolve = target?.reference?.resolve()
-                if (resolve != null) {
-                    val sourceFile = resolve.containingFile?.virtualFile as? LuaFile
-                    val range = resolve.nameRange
-                    if (range != null && sourceFile != null)
-                        list.add(Location(sourceFile.uri.toString(), range.toRange(sourceFile)))
+            if (params != null) {
+                withPsiFile(params.textDocument, params.position) { _, psiFile, i ->
+                    val target = TargetElementUtil.findTarget(psiFile, i)
+                    val resolve = target?.reference?.resolve()
+                    if (resolve != null) {
+                        val sourceFile = resolve.containingFile?.virtualFile as? LuaFile
+                        val range = resolve.nameRange
+                        if (range != null && sourceFile != null)
+                            list.add(Location(sourceFile.uri.toString(), range.toRange(sourceFile)))
+                    } else if (target != null) {
+                        val query = ReferencesSearch.search(target)
+                        query.forEach { ref ->
+                            val luaFile = ref.element.containingFile.virtualFile as LuaFile
+                            list.add(Location(luaFile.uri.toString(), ref.getRangeInFile(luaFile)))
+                        }
+                    }
                 }
             }
-
-            list
+            Either.forLeft(list)
         }
-    }
-
-    override fun rangeFormatting(params: DocumentRangeFormattingParams): CompletableFuture<MutableList<out TextEdit>> {
-        TODO()
     }
 
     override fun codeLens(params: CodeLensParams): CompletableFuture<MutableList<out CodeLens>> {
@@ -439,7 +459,7 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
     override fun resolveCodeLens(unresolved: CodeLens): CompletableFuture<CodeLens> {
         return computeAsync {
             val data = unresolved.data as? JsonPrimitive
-            val command = Command("References:0", null)
+            val command = Command("References:0", "emmy.showReferences")
             val uri = data?.asString
             if (uri != null) {
                 workspace.findFile(uri)?.let { file ->
@@ -494,24 +514,35 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
                     changes.add(TextDocumentEdit(documentIdentifier, u))
                 }
             }
-            val edit = WorkspaceEdit(changes)
+            val edit = WorkspaceEdit(changes.map { Either.forLeft(it) })
             edit
         }
     }
 
-    override fun completion(position: CompletionParams): CompletableFuture<Either<MutableList<CompletionItem>, CompletionList>> {
+    override fun completion(params: CompletionParams): CompletableFuture<Either<MutableList<CompletionItem>, CompletionList>> {
         return computeAsync { checker ->
             val list = CompletionList()
             list.items = mutableListOf()
-            val file = workspace.findFile(position.textDocument.uri)
+            val file = workspace.findFile(params.textDocument.uri)
             if (file is ILuaFile) {
-                val pos = file.getPosition(position.position.line, position.position.character)
+                val pos = file.getPosition(params.position.line, params.position.character)
                 val psi = file.psi
+                val trigger = params.context.triggerCharacter
                 if (psi != null) {
-                    CompletionService.collectCompletion(psi, pos, Consumer {
-                        checker.checkCanceled()
-                        list.items.add(it.asCompletionItem)
-                    })
+                    if(trigger == "("){
+                        CompletionService.collectCompletion(psi, pos, Consumer {
+                            checker.checkCanceled()
+                            if(it is LuaLookupElement && it.isEnumMember) {
+                                list.items.add(it.asCompletionItem)
+                            }
+                        })
+                    }
+                    else {
+                        CompletionService.collectCompletion(psi, pos, Consumer {
+                            checker.checkCanceled()
+                            list.items.add(it.asCompletionItem)
+                        })
+                    }
                 }
             }
             Either.forRight<MutableList<CompletionItem>, CompletionList>(list)
@@ -550,52 +581,73 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
 
     }
 
-    override fun signatureHelp(position: TextDocumentPositionParams): CompletableFuture<SignatureHelp> {
+    override fun signatureHelp(params: SignatureHelpParams?): CompletableFuture<SignatureHelp?> {
         return computeAsync {
+            var signatureHelp: SignatureHelp? = null
             val list = mutableListOf<SignatureInformation>()
             var activeParameter = 0
             var activeSig = 0
-            withPsiFile(position) { _, psiFile, i ->
-                val callExpr = PsiTreeUtil.findElementOfClassAtOffset(psiFile, i, LuaCallExpr::class.java, false)
-                var nCommas = 0
-                callExpr?.args?.firstChild?.let { firstChild ->
-                    var child: PsiElement? = firstChild
-                    while (child != null) {
-                        if (child.node.elementType == LuaTypes.COMMA) {
-                            activeParameter++
-                            nCommas++
-                        }
-                        child = child.nextSibling
-                    }
-                }
-
-                callExpr?.guessParentType(SearchContext.get(psiFile.project))?.let { parentType ->
-                    parentType.each { ty ->
-                        if (ty is ITyFunction) {
-                            val active = ty.findPerfectSignature(nCommas + 1)
-                            var idx = 0
-                            ty.process(Processor { sig ->
-                                val information = SignatureInformation()
-                                information.parameters = mutableListOf()
-                                sig.params.forEach { pi ->
-                                    val paramInfo =
-                                            ParameterInformation("${pi.name}:${pi.ty.displayName}", pi.ty.displayName)
-                                    information.parameters.add(paramInfo)
-                                }
-                                information.label = sig.displayName
-                                list.add(information)
-
-                                if (sig == active) {
-                                    activeSig = idx
-                                }
-                                idx++
-                                true
-                            })
+            if (params != null) {
+                withPsiFile(params.textDocument, params.position) { _, psiFile, i ->
+                    val callExpr = PsiTreeUtil.findElementOfClassAtOffset(psiFile, i, LuaCallExpr::class.java, false)
+                    var nCommas = 0
+                    callExpr?.args?.firstChild?.let { firstChild ->
+                        var child: PsiElement? = firstChild
+                        while (child != null) {
+                            if (child.node.elementType == LuaTypes.COMMA) {
+                                activeParameter++
+                                nCommas++
+                            }
+                            child = child.nextSibling
                         }
                     }
+
+                    callExpr?.guessParentType(SearchContext.get(psiFile.project))?.let { parentType ->
+                        parentType.each { ty ->
+                            if (ty is ITyFunction) {
+                                val active = ty.findPerfectSignature(callExpr, nCommas + 1)
+                                var idx = 0
+                                ty.process(Processor { sig ->
+                                    val information = SignatureInformation()
+                                    information.parameters = mutableListOf()
+                                    sig.params.forEach { pi ->
+                                        val pTy = pi.ty
+                                        val pTyDisplay: String = if(pTy is TyStringLiteral){
+                                            "\"${pTy.displayName}\""
+                                        } else{
+                                            pTy.displayName
+                                        }
+
+                                        val paramInfo =
+                                            ParameterInformation("${pi.name}${if(pi.nullable) "?" else "" }:${pTyDisplay}")
+                                        information.parameters.add(paramInfo)
+                                    }
+
+                                    if(sig.hasVarargs()){
+                                        val paramInfo =
+                                            ParameterInformation("...:${sig.varargTy?.displayName}")
+                                        information.parameters.add(paramInfo)
+                                    }
+
+                                    information.label = sig.displayName
+                                    list.add(information)
+
+                                    if (sig == active) {
+                                        activeSig = idx
+                                        if(sig.hasVarargs() && activeParameter > information.parameters.size - 1){
+                                            activeParameter = information.parameters.size - 1
+                                        }
+                                    }
+                                    idx++
+                                    true
+                                })
+                            }
+                        }
+                    }
                 }
+                signatureHelp = SignatureHelp(list, activeSig, activeParameter)
             }
-            SignatureHelp(list, activeSig, activeParameter)
+            signatureHelp
         }
     }
 
@@ -612,17 +664,17 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
                 file.psi?.let { psi ->
                     val formatter = FormattingFormatter(file, psi)
                     val keywords = setOf(
-                            "function", "local", "end", "do", "then", "while", "repeat", "if",
-                            "until", "for", "in", "elseif", "else", "return", "goto"
+                        "function", "local", "end", "do", "then", "while", "repeat", "if",
+                        "until", "for", "in", "elseif", "else", "return", "goto"
                     )
 
                     val operators = setOf(
-                            "(", ")", "{", "}", "[", "]", // 括号
-                            "+", "-", "*", "/", "//", "%", //运算
-                            "and", "not", "or", "==", "~=", "<=", ">=", "<", ">", // 逻辑运算
-                            ":", ".",  //调用运算符
-                            "~", "^", "&", "|", "<<", ">>", //位运算
-                            ",", ";", "=", "#", "::", ".."
+                        "(", ")", "{", "}", "[", "]", // 括号
+                        "+", "-", "*", "/", "//", "%", //运算
+                        "and", "not", "or", "==", "~=", "<=", ">=", "<", ">", // 逻辑运算
+                        ":", ".",  //调用运算符
+                        "~", "^", "&", "|", "<<", ">>", //位运算
+                        ",", ";", "=", "#", "::", ".."
                     ) // 杂七杂八
 
                     psi.acceptChildren(object : LuaVisitor() {
@@ -637,11 +689,12 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
                                             val siblingLine = file.getLine(sibling.textRange.endOffset).first
                                             if (siblingLine == commentLine) {
                                                 if (sibling is LuaLocalDef
-                                                        || sibling is LuaAssignStat
-                                                        || sibling is LuaExprStat
-                                                        || sibling is LuaBreakStat
-                                                        || sibling is LuaReturnStat
-                                                        || sibling is LuaLabelStat) {
+                                                    || sibling is LuaAssignStat
+                                                    || sibling is LuaExprStat
+                                                    || sibling is LuaBreakStat
+                                                    || sibling is LuaReturnStat
+                                                    || sibling is LuaLabelStat
+                                                ) {
                                                     formatter.attachTo(sibling, it)
                                                     return
                                                 }
@@ -896,10 +949,10 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
 
                     val lines = file.getLine(psi.textRange.endOffset)
                     list.add(
-                            TextEdit(
-                                    Range(Position(0, 0), Position(lines.first, lines.second)),
-                                    formatter.getFormattingResult()
-                            )
+                        TextEdit(
+                            Range(Position(0, 0), Position(lines.first, lines.second)),
+                            formatter.getFormattingResult()
+                        )
                     )
                 }
             }
@@ -912,25 +965,29 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
         val file = workspace.findFile(params.textDocument.uri)
         if (file is ILuaFile) {
             file.didChange(params)
+
+            file.diagnose()
             val diagnosticsParams = PublishDiagnosticsParams(params.textDocument.uri, file.diagnostics)
             client?.publishDiagnostics(diagnosticsParams)
         }
     }
 
     override fun references(params: ReferenceParams): CompletableFuture<MutableList<out Location>> {
-        val list = mutableListOf<Location>()
-        withPsiFile(params) { _, psiFile, pos ->
-            val element = TargetElementUtil.findTarget(psiFile, pos)
-            if (element != null) {
-                val target = element.reference?.resolve() ?: element
-                val query = ReferencesSearch.search(target)
-                query.forEach { ref ->
-                    val luaFile = ref.element.containingFile.virtualFile as LuaFile
-                    list.add(Location(luaFile.uri.toString(), ref.getRangeInFile(luaFile)))
+        return computeAsync {
+            val list = mutableListOf<Location>()
+            withPsiFile(params.textDocument, params.position) { _, psiFile, pos ->
+                val element = TargetElementUtil.findTarget(psiFile, pos)
+                if (element != null) {
+                    val target = element.reference?.resolve() ?: element
+                    val query = ReferencesSearch.search(target)
+                    query.forEach { ref ->
+                        val luaFile = ref.element.containingFile.virtualFile as LuaFile
+                        list.add(Location(luaFile.uri.toString(), ref.getRangeInFile(luaFile)))
+                    }
                 }
             }
+            list
         }
-        return CompletableFuture.completedFuture(list)
     }
 
     override fun foldingRange(params: FoldingRangeRequestParams?): CompletableFuture<MutableList<FoldingRange>> {
@@ -989,15 +1046,15 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
 
                     override fun visitElement(element: PsiElement) {
                         if (element is LuaFuncDef
-                                || element is LuaClassMethodDef
-                                || element is LuaLocalFuncDef
-                                || element is LuaClosureExpr
-                                || element is LuaWhileStat
-                                || element is LuaRepeatStat
-                                || element is LuaDoStat
-                                || element is LuaForAStat
-                                || element is LuaForBStat
-                                || element is LuaTableExpr
+                            || element is LuaClassMethodDef
+                            || element is LuaLocalFuncDef
+                            || element is LuaClosureExpr
+                            || element is LuaWhileStat
+                            || element is LuaRepeatStat
+                            || element is LuaDoStat
+                            || element is LuaForAStat
+                            || element is LuaForBStat
+                            || element is LuaTableExpr
                         ) {
                             var startLine = -1
                             // 过滤注释行
@@ -1005,10 +1062,10 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
                                 var child: PsiElement? = element.firstChild
                                 while (child != null) {
                                     if (child.node.elementType == LuaTypes.FUNCTION
-                                            || child.node.elementType == LuaTypes.REPEAT
-                                            || child.node.elementType == LuaTypes.DO
-                                            || child.node.elementType == LuaTypes.TABLE_FIELD
-                                            || child.node.elementType == LuaTypes.FOR
+                                        || child.node.elementType == LuaTypes.REPEAT
+                                        || child.node.elementType == LuaTypes.DO
+                                        || child.node.elementType == LuaTypes.TABLE_FIELD
+                                        || child.node.elementType == LuaTypes.FOR
                                     ) {
                                         startLine = file.getLine(child.textRange.startOffset).first
                                         break
@@ -1076,14 +1133,18 @@ class LuaTextDocumentService(private val workspace: LuaWorkspaceService) : TextD
         }
     }
 
-    private fun withPsiFile(position: TextDocumentPositionParams, code: (ILuaFile, LuaPsiFile, Int) -> Unit) {
-        withPsiFile(position.textDocument, position.position, code)
-    }
+//    override fun semanticTokensFull(params: SemanticTokensParams?): CompletableFuture<SemanticTokens> {
+//        return super.semanticTokensFull(params)
+//    }
+
+//    private fun withPsiFile(position: TextDocumentPositionParams, code: (ILuaFile, LuaPsiFile, Int) -> Unit) {
+//        withPsiFile(position.textDocument, position.position, code)
+//    }
 
     private fun withPsiFile(
-            textDocument: TextDocumentIdentifier,
-            position: Position,
-            code: (ILuaFile, LuaPsiFile, Int) -> Unit
+        textDocument: TextDocumentIdentifier,
+        position: Position,
+        code: (ILuaFile, LuaPsiFile, Int) -> Unit
     ) {
         val file = workspace.findFile(textDocument.uri)
         if (file is ILuaFile) {

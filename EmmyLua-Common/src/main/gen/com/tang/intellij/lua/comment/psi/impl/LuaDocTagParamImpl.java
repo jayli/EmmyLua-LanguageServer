@@ -22,6 +22,7 @@ public class LuaDocTagParamImpl extends ASTWrapperPsiElement implements LuaDocTa
     visitor.visitTagParam(this);
   }
 
+  @Override
   public void accept(@NotNull PsiElementVisitor visitor) {
     if (visitor instanceof LuaDocVisitor) accept((LuaDocVisitor)visitor);
     else super.accept(visitor);
@@ -31,6 +32,12 @@ public class LuaDocTagParamImpl extends ASTWrapperPsiElement implements LuaDocTa
   @Nullable
   public LuaDocCommentString getCommentString() {
     return PsiTreeUtil.getChildOfType(this, LuaDocCommentString.class);
+  }
+
+  @Override
+  @Nullable
+  public LuaDocNullable getNullable() {
+    return PsiTreeUtil.getChildOfType(this, LuaDocNullable.class);
   }
 
   @Override
@@ -45,9 +52,15 @@ public class LuaDocTagParamImpl extends ASTWrapperPsiElement implements LuaDocTa
     return PsiTreeUtil.getChildOfType(this, LuaDocTy.class);
   }
 
+  @Override
   @NotNull
   public ITy getType() {
     return LuaDocPsiImplUtilKt.getType(this);
+  }
+
+  @Override
+  public boolean isNullable() {
+    return LuaDocPsiImplUtilKt.isNullable(this);
   }
 
 }

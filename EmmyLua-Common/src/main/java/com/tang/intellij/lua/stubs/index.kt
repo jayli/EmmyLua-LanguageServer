@@ -61,7 +61,10 @@ private fun index(doc: LuaDocTagClass, sink: IndexSink) {
 }
 
 private fun index(field: LuaDocTagField, sink: IndexSink) {
-    val name = field.name
+    var name = field.name
+    if(name == null && field.fieldIndex != null){
+        name =  "[${field.fieldIndex?.text}]"
+    }
     if (name != null) {
         var className: String? = null
 
@@ -144,7 +147,7 @@ private fun index(indexExpr: LuaIndexExpr, sink: IndexSink) {
     classNameSet.forEach { className ->
         sink.occurrence(StubKeys.CLASS_MEMBER, className.hashCode(), indexExpr)
         sink.occurrence(StubKeys.CLASS_MEMBER, "$className*$name".hashCode(), indexExpr)
-
+        sink.occurrence(StubKeys.CONST, "$className*$name".hashCode(), indexExpr)
         sink.occurrence(StubKeys.SHORT_NAME, name, indexExpr)
     }
 }
@@ -161,6 +164,7 @@ private fun index(tableField: LuaTableField, sink: IndexSink) {
     sink.occurrence(StubKeys.CLASS_MEMBER, className.hashCode(), tableField)
     sink.occurrence(StubKeys.CLASS_MEMBER, "$className*$name".hashCode(), tableField)
     sink.occurrence(StubKeys.SHORT_NAME, name, tableField)
+    sink.occurrence(StubKeys.CONST, "$className*$name".hashCode(), tableField)
 }
 
 private fun findTableExprTypeName(field: LuaTableField): String? {
@@ -188,6 +192,10 @@ private fun index(luaNameExpr: LuaNameExpr, sink: IndexSink) {
         sink.occurrence(StubKeys.CLASS_MEMBER, Constants.WORD_G.hashCode(), luaNameExpr)
         sink.occurrence(StubKeys.CLASS_MEMBER, "${Constants.WORD_G}*$name".hashCode(), luaNameExpr)
         sink.occurrence(StubKeys.SHORT_NAME, name, luaNameExpr)
+        sink.occurrence(StubKeys.CONST, "${Constants.WORD_G}*$name".hashCode(), luaNameExpr)
+    }
+    else{
+        sink.occurrence(StubKeys.CONST, "${luaNameExpr.containingFile.virtualFile.path}*$name".hashCode(), luaNameExpr)
     }
 }
 

@@ -34,6 +34,7 @@ public class LuaDocTagClassImpl extends StubBasedPsiElementBase<LuaDocTagClassSt
     visitor.visitTagClass(this);
   }
 
+  @Override
   public void accept(@NotNull PsiElementVisitor visitor) {
     if (visitor instanceof LuaDocVisitor) accept((LuaDocVisitor)visitor);
     else super.accept(visitor);
@@ -51,48 +52,56 @@ public class LuaDocTagClassImpl extends StubBasedPsiElementBase<LuaDocTagClassSt
     return notNullChild(findChildByType(ID));
   }
 
+  @Override
   @NotNull
   public ITyClass getType() {
     return LuaDocPsiImplUtilKt.getType(this);
   }
 
+  @Override
   @NotNull
   public ItemPresentation getPresentation() {
     return LuaDocPsiImplUtilKt.getPresentation(this);
   }
 
+  @Override
   @NotNull
   public PsiElement getNameIdentifier() {
     return LuaDocPsiImplUtilKt.getNameIdentifier(this);
   }
 
+  @Override
   @NotNull
   public PsiElement setName(@NotNull String newName) {
     return LuaDocPsiImplUtilKt.setName(this, newName);
   }
 
+  @Override
   @NotNull
   public String getName() {
     return LuaDocPsiImplUtilKt.getName(this);
   }
 
+  @Override
   public int getTextOffset() {
     return LuaDocPsiImplUtilKt.getTextOffset(this);
   }
 
+  @Override
   @NotNull
   public String toString() {
     return LuaDocPsiImplUtilKt.toString(this);
   }
 
+  @Override
   public boolean isDeprecated() {
     return LuaDocPsiImplUtilKt.isDeprecated(this);
   }
 
   @Override
   @Nullable
-  public LuaDocClassNameRef getSuperClassNameRef() {
-    return PsiTreeUtil.getChildOfType(this, LuaDocClassNameRef.class);
+  public LuaDocClassNameRefList getSuperClassNameRef() {
+    return PsiTreeUtil.getChildOfType(this, LuaDocClassNameRefList.class);
   }
 
   @Override
@@ -101,10 +110,16 @@ public class LuaDocTagClassImpl extends StubBasedPsiElementBase<LuaDocTagClassSt
     return findChildByType(TAG_NAME_MODULE);
   }
 
-  @Nullable
   @Override
+  @Nullable
   public PsiElement getEnum() {
     return findChildByType(TAG_NAME_ENUM);
+  }
+
+  @Override
+  @Nullable
+  public PsiElement getInterface() {
+    return findChildByType(TAG_NAME_INTERFACE);
   }
 
 }

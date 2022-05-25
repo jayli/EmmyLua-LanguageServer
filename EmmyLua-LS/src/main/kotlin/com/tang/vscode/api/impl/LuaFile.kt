@@ -5,27 +5,20 @@ import com.intellij.lang.cacheBuilder.DefaultWordsScanner
 import com.intellij.lexer.FlexAdapter
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.PsiErrorElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.tree.TokenSet
-import com.intellij.psi.util.PsiTreeUtil
-import com.tang.intellij.lua.comment.psi.LuaDocPsiElement
 import com.tang.intellij.lua.lang.LuaLanguageLevel
 import com.tang.intellij.lua.lang.LuaParserDefinition
 import com.tang.intellij.lua.lexer.LuaLexer
 import com.tang.intellij.lua.lexer._LuaLexer
 import com.tang.intellij.lua.parser.LuaParser
-import com.tang.intellij.lua.psi.LuaCallExpr
-import com.tang.intellij.lua.psi.LuaExprStat
 import com.tang.intellij.lua.psi.LuaPsiFile
 import com.tang.intellij.lua.stubs.IndexSink
 import com.tang.lsp.FileURI
 import com.tang.lsp.ILuaFile
 import com.tang.lsp.Word
-import com.tang.lsp.toRange
 import com.tang.vscode.diagnostics.DiagnosticsService
 import org.eclipse.lsp4j.Diagnostic
-import org.eclipse.lsp4j.DiagnosticSeverity
 import org.eclipse.lsp4j.DidChangeTextDocumentParams
 
 internal data class Line(val line: Int, val startOffset: Int, val stopOffset: Int)
@@ -35,8 +28,15 @@ class LuaFile(override val uri: FileURI) : VirtualFileBase(uri), ILuaFile, Virtu
     private var _lines = mutableListOf<Line>()
     private var _myPsi: LuaPsiFile? = null
     private var _words: List<Word>? = null
+    private val _diagnostics = mutableListOf<Diagnostic>()
+    private var _completeDiagnostic = false
 
-    override val diagnostics = mutableListOf<Diagnostic>()
+    override val diagnostics: List<Diagnostic>
+        get() {
+            synchronized(_diagnostics) {
+                return _diagnostics.toList()
+            }
+        }
 
     @Synchronized
     override fun didChange(params: DidChangeTextDocumentParams) {
@@ -83,6 +83,15 @@ class LuaFile(override val uri: FileURI) : VirtualFileBase(uri), ILuaFile, Virtu
         onChanged()
     }
 
+    override fun diagnose() {
+        synchronized(_diagnostics) {
+            if(!_completeDiagnostic) {
+                DiagnosticsService.diagnosticFile(this, _diagnostics)
+                _completeDiagnostic = true
+            }
+        }
+    }
+
     @Synchronized
     private fun updateLines() {
         _lines.clear()
@@ -117,7 +126,10 @@ class LuaFile(override val uri: FileURI) : VirtualFileBase(uri), ILuaFile, Virtu
 
     private fun doParser() {
         _words = null
-        diagnostics.clear()
+        synchronized(_diagnostics) {
+            _diagnostics.clear()
+            _completeDiagnostic = false
+        }
         unindex()
         val parser = LuaParser()
         val builder = PsiBuilderFactory.getInstance().createBuilder(
@@ -131,10 +143,8 @@ class LuaFile(override val uri: FileURI) : VirtualFileBase(uri), ILuaFile, Virtu
         _myPsi?.virtualFile = this
 
         index()
-
-        // 索引建立完之后再诊断
-        DiagnosticsService.diagnosticFile(this, diagnostics)
     }
+
 
     /*private fun getLineStart(line: Int): Int {
         return _lines.firstOrNull { it.line == line } ?.startOffset ?: 0

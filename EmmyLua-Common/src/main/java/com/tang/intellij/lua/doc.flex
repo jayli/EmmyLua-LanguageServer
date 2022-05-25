@@ -46,6 +46,7 @@ LINE_WS=[\ \t\f]
 WHITE_SPACE=({LINE_WS}|{EOL})+
 STRING=[^\r\n\t\f]*
 ID=[:jletter:] ([:jletterdigit:]|\.)*
+NUM=[0-9]+
 AT=@
 //三个-以上
 DOC_DASHES = --+
@@ -58,11 +59,14 @@ SINGLE_QUOTED_STRING='([^\\\']|\\\S|\\[\r\n])*'?    //'([^\\'\r\n]|\\[^\r\n])*'?
 %state xTAG_NAME
 %state xCOMMENT_STRING
 %state xPARAM
+%state xPARAM_ID
 %state xTYPE_REF
 %state xCLASS
 %state xCLASS_EXTEND
 %state xFIELD
 %state xFIELD_ID
+%state xFIELD_ID_NULLABLE
+%state xFIELD_INDEX
 %state xGENERIC
 %state xALIAS
 %state xSUPPRESS
@@ -91,6 +95,7 @@ SINGLE_QUOTED_STRING='([^\\\']|\\\S|\\[\r\n])*'?    //'([^\\'\r\n]|\\[^\r\n])*'?
     "class"                    { yybegin(xCLASS); return TAG_NAME_CLASS; }
     "module"                   { yybegin(xCLASS); return TAG_NAME_MODULE; }
     "enum"                     { yybegin(xCLASS); return TAG_NAME_ENUM; }
+    "interface"                { yybegin(xCLASS); return TAG_NAME_INTERFACE; }
     "return"                   { beginType(); return TAG_NAME_RETURN; }
     "type"                     { beginType(); return TAG_NAME_TYPE;}
     "overload"                 { beginType(); return TAG_NAME_OVERLOAD; }
@@ -102,6 +107,7 @@ SINGLE_QUOTED_STRING='([^\\\']|\\\S|\\[\r\n])*'?    //'([^\\'\r\n]|\\[^\r\n])*'?
     "see"                      { yybegin(xTAG); return TAG_NAME_SEE; }
     "alias"                    { yybegin(xALIAS); return TAG_NAME_ALIAS; }
     "suppress"                 { yybegin(xSUPPRESS); return TAG_NAME_SUPPRESS; }
+    "deprecated"               { return TAG_NAME_DEPRECATED; }
     {ID}                       { yybegin(xCOMMENT_STRING); return TAG_NAME; }
     [^]                        { return com.intellij.psi.TokenType.BAD_CHARACTER; }
 }
@@ -133,18 +139,37 @@ SINGLE_QUOTED_STRING='([^\\\']|\\\S|\\[\r\n])*'?    //'([^\\'\r\n]|\\[^\r\n])*'?
 }
 
 <xPARAM> {
-    {ID}                       { beginType(); return ID; }
+    {ID}                       { yybegin(xPARAM_ID); return ID; }
     "..."                      { beginType(); return ID; } //varargs
+}
+
+<xPARAM_ID> {
+    "?"                        { beginType(); return QM;}
+    [^]                        { beginType(); yypushback(yylength());}
 }
 
 <xFIELD> {
     "private"                  { yybegin(xFIELD_ID); return PRIVATE; }
     "protected"                { yybegin(xFIELD_ID); return PROTECTED; }
     "public"                   { yybegin(xFIELD_ID); return PUBLIC; }
-    {ID}                       { beginType(); return ID; }
+    "["                        { yybegin(xFIELD_INDEX); return LBRACK; }
+    {ID}                       { yybegin(xFIELD_ID_NULLABLE); return ID; }
 }
+
 <xFIELD_ID> {
-    {ID}                       { beginType(); return ID; }
+    "["                        { yybegin(xFIELD_INDEX); return LBRACK; }
+    {ID}                       { yybegin(xFIELD_ID_NULLABLE); return ID; }
+}
+
+<xFIELD_ID_NULLABLE>{
+    "?"                        { beginType(); return QM; }
+    [^]                        { beginType(); yypushback(yylength());}
+}
+
+<xFIELD_INDEX>{
+    {NUM}                      { return NUM; }
+    {ID}                       { return ID; }
+    "]"                        { beginType(); return RBRACK; }
 }
 
 <xTYPE_REF> {

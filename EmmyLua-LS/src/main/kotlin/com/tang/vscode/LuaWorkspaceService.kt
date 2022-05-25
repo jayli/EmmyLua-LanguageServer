@@ -22,6 +22,7 @@ import com.tang.vscode.configuration.ConfigurationManager
 import com.tang.vscode.utils.computeAsync
 import com.tang.vscode.utils.getSymbol
 import org.eclipse.lsp4j.*
+import org.eclipse.lsp4j.jsonrpc.CompletableFutures
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
 import org.eclipse.lsp4j.services.WorkspaceService
 import java.io.File
@@ -37,6 +38,7 @@ class LuaWorkspaceService : WorkspaceService, IWorkspace {
     private val schemeMap = mutableMapOf<String, IFolder>()
     private val configurationManager = ConfigurationManager()
     private var client: LuaLanguageClient? = null
+    private var workspaceDiagnoseFuture: CompletableFuture<Unit>? = null
 
     inner class WProject : UserDataHolderBase(), Project {
         override fun process(processor: Processor<PsiFile>) {
@@ -68,13 +70,13 @@ class LuaWorkspaceService : WorkspaceService, IWorkspace {
                 FileChangeType.Created -> addFile(change.uri)
                 FileChangeType.Deleted -> removeFile(change.uri)
                 FileChangeType.Changed -> {
-                    if(change.uri.endsWith("globalStorage")){
+                    if (change.uri.endsWith("globalStorage")) {
                         return
                     }
                     removeFile(change.uri)
                     addFile(change.uri)
                 }
-                else -> { }
+                else -> {}
             }
         }
     }
@@ -84,6 +86,7 @@ class LuaWorkspaceService : WorkspaceService, IWorkspace {
         val ret = VSCodeSettings.update(settings)
         if (ret.associationChanged) {
             loadWorkspace()
+            diagnoseWorkspace()
         }
     }
 
@@ -95,6 +98,7 @@ class LuaWorkspaceService : WorkspaceService, IWorkspace {
     fun updateConfig(params: UpdateConfigParams): CompletableFuture<Void> {
         configurationManager.updateConfiguration(params)
         loadWorkspace()
+        diagnoseWorkspace()
         return CompletableFuture()
     }
 
@@ -102,7 +106,7 @@ class LuaWorkspaceService : WorkspaceService, IWorkspace {
         if (params.query.isBlank())
             return CompletableFuture.completedFuture(mutableListOf())
         val matcher = CamelHumpMatcher(params.query, false)
-        return computeAsync { cancel->
+        return computeAsync { cancel ->
             val list = mutableListOf<SymbolInformation>()
             LuaShortNameIndex.processValues(project, GlobalSearchScope.projectScope(project), Processor {
                 cancel.checkCanceled()
@@ -123,8 +127,10 @@ class LuaWorkspaceService : WorkspaceService, IWorkspace {
         params.event.removed.forEach {
             removeRoot(it.uri)
         }
-        if (params.event.added.isNotEmpty())
+        if (params.event.added.isNotEmpty()) {
             loadWorkspace()
+            diagnoseWorkspace()
+        }
     }
 
     override fun eachRoot(processor: (ws: IFolder) -> Boolean) {
@@ -226,6 +232,10 @@ class LuaWorkspaceService : WorkspaceService, IWorkspace {
         })
     }
 
+    fun diagnoseWorkspace() {
+        sendAllDiagnostics()
+    }
+
     private fun loadWorkspace(monitor: IProgressMonitor) {
         monitor.setProgress("load workspace folders", 0f)
         val collections = fileManager.findAllFiles()
@@ -238,25 +248,44 @@ class LuaWorkspaceService : WorkspaceService, IWorkspace {
                 processedCount++
                 val file = uri.toFile()
                 if (file != null) {
-                    monitor.setProgress("Emmy parse file: ${file.canonicalPath}", processedCount / totalFileCount)
+                    monitor.setProgress(
+                        "Emmy parse file[${(processedCount / totalFileCount * 100).toInt()}%]: ${file.canonicalPath}",
+                        processedCount / totalFileCount
+                    )
                 }
                 addFile(uri, null)
             }
         }
         monitor.done()
-        sendAllDiagnostics()
     }
 
     /**
      * send all diagnostics of the workspace
      */
     private fun sendAllDiagnostics() {
+        workspaceDiagnoseFuture?.cancel(true)
+        val files = mutableListOf<LuaFile>()
         project.process {
             val file = it.virtualFile
-            if (file is LuaFile && file.diagnostics.isNotEmpty()) {
-                client?.publishDiagnostics(PublishDiagnosticsParams(file.uri.toString(), file.diagnostics))
+            if (file is LuaFile) {
+                files.add(file)
             }
             true
+        }
+
+        workspaceDiagnoseFuture = CompletableFutures.computeAsync { cancel ->
+            files.forEach { file ->
+                if (cancel.isCanceled) {
+                    return@forEach
+                }
+
+                file.diagnose()
+                val diagnostics = file.diagnostics
+                if (diagnostics.isNotEmpty()) {
+                    client?.publishDiagnostics(PublishDiagnosticsParams(file.uri.toString(), diagnostics))
+                }
+            }
+            workspaceDiagnoseFuture = null
         }
     }
 
