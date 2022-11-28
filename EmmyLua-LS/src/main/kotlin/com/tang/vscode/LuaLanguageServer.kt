@@ -53,18 +53,19 @@ class LuaLanguageServer : LanguageServer, LanguageClientAware {
     }
 
     override fun initialize(params: InitializeParams): CompletableFuture<InitializeResult> {
-        if (params.rootUri != null)
-            workspaceService.addRoot(params.rootUri)
-
+        if (params.workspaceFolders != null) {
+            for (workspace in params.workspaceFolders) {
+                workspaceService.addRoot(workspace.uri)
+            }
+        }
         initIntellijEnv()
 
         val json = params.initializationOptions as? JsonObject
         if (json != null) {
             val stdFolder = json["stdFolder"] as? JsonPrimitive
-            if (stdFolder != null && stdFolder.isString)
+            if (stdFolder != null && stdFolder.isString) {
                 workspaceService.addRoot(stdFolder.asString)
-            val workspaceFolders = json["workspaceFolders"] as? JsonArray
-            workspaceFolders?.forEach { workspaceService.addRoot(it.asString) }
+            }
             val clientType = json["client"] as? JsonPrimitive
             if (clientType != null)
                 VSCodeSettings.clientType = clientType.asString
@@ -82,6 +83,7 @@ class LuaLanguageServer : LanguageServer, LanguageClientAware {
         val completionOptions = CompletionOptions()
         completionOptions.triggerCharacters = listOf(".", ":", "@", "(")
         completionOptions.resolveProvider = true
+        completionOptions.completionItem = CompletionItemOptions(true)
         capabilities.completionProvider = completionOptions
 
         capabilities.definitionProvider = Either.forLeft(true)
@@ -102,6 +104,13 @@ class LuaLanguageServer : LanguageServer, LanguageClientAware {
         capabilities.foldingRangeProvider = Either.forLeft(true)
 
         capabilities.textDocumentSync = Either.forLeft(TextDocumentSyncKind.Full)
+
+        val inlayHintOptions = InlayHintRegistrationOptions()
+        inlayHintOptions.resolveProvider = true
+        capabilities.inlayHintProvider = Either.forRight(inlayHintOptions)
+
+        capabilities.diagnosticProvider = DiagnosticRegistrationOptions(false, false)
+
 //        capabilities.semanticTokensProvider = SemanticTokensWithRegistrationOptions(
 //            SemanticTokensLegend(
 //                listOf(),
@@ -109,20 +118,19 @@ class LuaLanguageServer : LanguageServer, LanguageClientAware {
 //            ),
 //            true
 //        )
+//        capabilities.colorProvider = Either.forLeft(true)
+
         res.capabilities = capabilities
         return CompletableFuture.completedFuture(res)
     }
 
     override fun initialized(params: InitializedParams) {
         val options = DidChangeWatchedFilesRegistrationOptions(listOf(FileSystemWatcher("**/*")))
-        val didChangeWatchedFiles = Registration(UUID.randomUUID().toString(), "workspace/didChangeWatchedFiles", options)
+        val didChangeWatchedFiles =
+            Registration(UUID.randomUUID().toString(), "workspace/didChangeWatchedFiles", options)
         client?.registerCapability(RegistrationParams(listOf(didChangeWatchedFiles)))
         val didChangeWorkspaceFolders = Registration(WORKSPACE_FOLDERS_CAPABILITY_ID, WORKSPACE_FOLDERS_CAPABILITY_NAME)
         client?.registerCapability(RegistrationParams(listOf(didChangeWorkspaceFolders)))
-
-        workspaceService.loadWorkspace()
-
-        workspaceService.diagnoseWorkspace()
     }
 
     override fun getWorkspaceService(): WorkspaceService {
@@ -135,5 +143,8 @@ class LuaLanguageServer : LanguageServer, LanguageClientAware {
         workspaceService.connect(luaClient)
 
         this.client = luaClient
+    }
+
+    override fun setTrace(params: SetTraceParams) {
     }
 }

@@ -34,6 +34,7 @@ interface IFunSignature {
     val paramSignature: String
     val tyParameters: Array<TyParameter>
     val varargTy: ITy?
+    val document: String?
     fun substitute(substitutor: ITySubstitutor): IFunSignature
     fun subTypeOf(other: IFunSignature, context: SearchContext, strict: Boolean): Boolean
 }
@@ -183,7 +184,8 @@ class FunSignature(
     override val returnTy: ITy,
     override val varargTy: ITy?,
     params: Array<LuaParamInfo>,
-    tyParameters: Array<TyParameter> = emptyArray()
+    tyParameters: Array<TyParameter> = emptyArray(),
+    override val document: String = ""
 ) : FunSignatureBase(colonCall, params, tyParameters) {
 
     companion object {
@@ -293,8 +295,7 @@ fun ITyFunction.findPerfectSignature(call: LuaCallExpr, paramSize: Int = 0): IFu
                 }
                 true
             })
-        }
-        else if(firstParamTy.subTypeOf(Ty.NUMBER, searchContext, true)){
+        } else if (firstParamTy.subTypeOf(Ty.NUMBER, searchContext, true)) {
             process(Processor {
                 val params = it.params
                 if (params.isNotEmpty()) {
@@ -308,8 +309,7 @@ fun ITyFunction.findPerfectSignature(call: LuaCallExpr, paramSize: Int = 0): IFu
                 }
                 true
             })
-        }
-        else if (firstParamTy is TyClass && firstParamTy.isEnum(call.project, searchContext)) {
+        } else if (firstParamTy is TyClass && firstParamTy.isEnum) {
             process(Processor {
                 val params = it.params
                 if (params.isNotEmpty()) {
@@ -348,7 +348,7 @@ fun ITyFunction.findPerfectSignature(call: LuaCallExpr, paramSize: Int = 0): IFu
         else if (!isColonCall && call.isMethodColonCall) {
             val originSig = findPerfectSignature(nArgs + 1)
 
-            if(originSig.params.isNotEmpty()) {
+            if (originSig.params.isNotEmpty()) {
                 val luaParamInfoList = originSig.params.toMutableList()
                 luaParamInfoList.removeAt(0)
                 val luaParamInfoArray = luaParamInfoList.toTypedArray()
@@ -358,8 +358,7 @@ fun ITyFunction.findPerfectSignature(call: LuaCallExpr, paramSize: Int = 0): IFu
                     originSig.varargTy,
                     luaParamInfoArray
                 )
-            }
-            else{
+            } else {
                 sig = FunSignature(
                     true,
                     originSig.returnTy,
@@ -449,6 +448,8 @@ class TyPsiFunction(private val colonCall: Boolean, val psi: LuaFuncBodyOwner, f
 
             override val varargTy: ITy?
                 get() = psi.varargType
+            override val document: String?
+                get() = null
         }
     }
 

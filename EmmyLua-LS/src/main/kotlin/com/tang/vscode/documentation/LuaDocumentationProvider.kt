@@ -23,10 +23,15 @@ import com.intellij.psi.util.PsiTreeUtil
 import com.tang.intellij.lua.comment.psi.LuaDocTagClass
 import com.tang.intellij.lua.comment.psi.LuaDocTagField
 import com.tang.intellij.lua.psi.*
+import com.tang.intellij.lua.psi.search.LuaShortNamesManager
 import com.tang.intellij.lua.reference.ReferencesSearch
 import com.tang.intellij.lua.search.SearchContext
 import com.tang.intellij.lua.stubs.index.LuaClassIndex
 import com.tang.intellij.lua.ty.*
+import com.tang.lsp.ExtendApiBase
+import com.tang.vscode.extendApi.ExtendApiService
+import com.tang.vscode.extendApi.ExtendShortNameManager
+
 
 /**
  * Documentation support
@@ -38,7 +43,7 @@ class LuaDocumentationProvider : DocumentationProvider {
     }
 
     override fun generateDoc(element: PsiElement, originalElement: PsiElement?): String? {
-        return generateDoc(element)
+        return generateDoc(element, false)
     }
 
     override fun getQuickNavigateInfo(element: PsiElement?, originalElement: PsiElement?): String? {
@@ -72,18 +77,18 @@ class LuaDocumentationProvider : DocumentationProvider {
     }
 
 
-    fun generateDoc(element: PsiElement): String? {
+    fun generateDoc(element: PsiElement, inComplete: Boolean): String? {
         val sb = StringBuilder()
         when (element) {
             is LuaParamNameDef -> renderParamNameDef(sb, element)
             is LuaDocTagClass -> renderClassDef(sb, element)
-            is LuaClassMember -> renderClassMember(sb, element)
+            is LuaClassMember -> renderClassMember(sb, element, inComplete)
             is LuaNameDef -> renderNamDef(sb, element)
             is LuaLocalFuncDef -> {
                 sb.wrapLanguage("lua") {
                     sb.append("local function ${element.name}")
                     val type = element.guessType(SearchContext.get(element.project)) as ITyFunction
-                    renderSignature(sb, type.mainSignature)
+                    renderSignature(sb, type.mainSignature, inComplete)
                 }
                 renderComment(sb, element.comment)
             }
@@ -96,7 +101,24 @@ class LuaDocumentationProvider : DocumentationProvider {
         return null
     }
 
-    private fun renderClassMember(sb: StringBuilder, classMember: LuaClassMember) {
+    fun generateCommentDoc(element: PsiElement): String {
+        val sb = StringBuilder()
+        if (element is LuaCommentOwner) {
+            renderComment(sb, element.comment)
+        }
+        if (sb.isNotEmpty()) return sb.toString()
+        return ""
+    }
+
+    fun generateExtendDoc(clazzName: String, memberName: String): String? {
+        val member = ExtendApiService.findMember(clazzName, memberName, true)
+        if (member != null) {
+            return generateDoc(member, true)
+        }
+        return null
+    }
+
+    private fun renderClassMember(sb: StringBuilder, classMember: LuaClassMember, inComplete: Boolean) {
         val context = SearchContext.get(classMember.project)
         val parentType = classMember.guessClassType(context)
         val ty = classMember.guessType(context)
@@ -104,41 +126,37 @@ class LuaDocumentationProvider : DocumentationProvider {
         if (parentType != null) {
             sb.wrapLanguage("lua") {
                 when (classMember.visibility) {
-                    Visibility.PUBLIC -> {
-                        sb.append("(public) ")
-                    }
                     Visibility.PRIVATE -> {
-                        sb.append("(private) ")
+                        sb.append("private ")
                     }
                     Visibility.PROTECTED -> {
-                        sb.append("(protected) ")
+                        sb.append("protected ")
+                    }
+                    else -> {
+                        // ignore
                     }
                 }
                 when (ty) {
                     is TyFunction -> {
-                        sb.append("function ")
-                        if (parentType.displayName != "_G") {
-                            renderTy(sb, parentType)
-                            sb.append(if (ty.isColonCall) ":" else ".")
-                        }
                         sb.append(classMember.name)
-                        renderSignature(sb, ty.mainSignature)
-
+                        renderSignature(sb, ty.mainSignature, inComplete)
+                        return@wrapLanguage
+                    }
+                    is TyUnion -> {
+                        sb.append(classMember.name).appendLine()
+                        ty.each {
+                            sb.appendLine("| ${ty.displayName}")
+                        }
                         return@wrapLanguage
                     }
                     else -> {
-                        sb.append("field ")
-                        if (classMember.name != null && LuaConst.isConstField(
-                                parentType.className,
-                                classMember.name!!,
-                                context
-                            )
+                        if (classMember.name != null
+                            && LuaConst.isConstField(parentType.className, classMember.name!!, context)
                         ) {
                             when (classMember) {
                                 is LuaTableField -> {
                                     if (classMember.exprList.isNotEmpty()) {
-                                        renderTy(sb, parentType)
-                                        sb.append(".${classMember.name} = ")
+                                        sb.append("${classMember.name} = ")
                                         sb.append(classMember.exprList.first().text)
                                         return@wrapLanguage
                                     }
@@ -151,9 +169,11 @@ class LuaDocumentationProvider : DocumentationProvider {
                                         val values = assignStat.valueExprList?.exprList ?: listOf()
 
                                         for (i in 0 until assignees.size) {
-                                            if (assignees[i] == classMember && i < values.size && isConstLiteral(values[i])) {
-                                                renderTy(sb, parentType)
-                                                sb.append(".${classMember.name} = ${values[i].text}")
+                                            if (assignees[i] == classMember && i < values.size && isConstLiteral(
+                                                    values[i]
+                                                )
+                                            ) {
+                                                sb.append("${classMember.name} = ${values[i].text}")
                                                 sb.append("\n")
                                                 return@wrapLanguage
                                             }
@@ -167,8 +187,7 @@ class LuaDocumentationProvider : DocumentationProvider {
                         }
                     }
                 }
-                renderTy(sb, parentType)
-                sb.append(".${classMember.name}:")
+                sb.append("${classMember.name}: ")
                 renderTy(sb, ty)
             }
         } else {
@@ -179,16 +198,17 @@ class LuaDocumentationProvider : DocumentationProvider {
                     sb.append("global ")
                     with(sb) {
                         append(nameExpr.name)
-                        if(LuaConst.isConstGlobal(nameExpr.name, context)
-                            && (Ty.STRING.subTypeOf(ty, context, true) || Ty.NUMBER.subTypeOf(ty, context, true)) ){
+                        if (LuaConst.isConstGlobal(nameExpr.name, context)
+                            && (Ty.STRING.subTypeOf(ty, context, true) || Ty.NUMBER.subTypeOf(ty, context, true))
+                        ) {
                             val assignStat = nameExpr.assignStat
 
-                            if(assignStat != null) {
+                            if (assignStat != null) {
                                 val assignees = assignStat.varExprList.exprList
                                 val values = assignStat.valueExprList?.exprList ?: listOf()
 
                                 for (i in 0 until assignees.size) {
-                                    if (assignees[i] == nameExpr && i < values.size && isConstLiteral(values[i]))  {
+                                    if (assignees[i] == nameExpr && i < values.size && isConstLiteral(values[i])) {
                                         sb.append(" = ${values[i].text}")
                                         sb.append("\n")
                                         return@wrapLanguage
@@ -199,9 +219,9 @@ class LuaDocumentationProvider : DocumentationProvider {
                         }
 
                         when (ty) {
-                            is TyFunction -> renderSignature(sb, ty.mainSignature)
+                            is TyFunction -> renderSignature(sb, ty.mainSignature, inComplete)
                             else -> {
-                                append(":")
+                                append(": ")
                                 renderTy(sb, ty)
                             }
                         }
@@ -216,7 +236,9 @@ class LuaDocumentationProvider : DocumentationProvider {
         //comment content
         if (classMember is LuaCommentOwner)
             renderComment(sb, classMember.comment)
-        else {
+        else if (classMember is ExtendApiBase) {
+            sb.append(classMember.getComment())
+        } else {
             if (classMember is LuaDocTagField)
                 renderCommentString("  ", null, sb, classMember.commentString)
             else if (classMember is LuaIndexExpr) {
@@ -236,7 +258,7 @@ class LuaDocumentationProvider : DocumentationProvider {
             renderDocParam(sb, docParamDef)
         } else {
             val ty = infer(paramNameDef, SearchContext.get(paramNameDef.project))
-            sb.appendLine("@param `${paramNameDef.name}`:")
+            sb.appendLine("(parameter) `${paramNameDef.name}`: ")
             renderTy(sb, ty)
         }
     }
@@ -254,7 +276,7 @@ class LuaDocumentationProvider : DocumentationProvider {
                         if (nameList != null && exprList != null) {
                             val index = localDef.getIndexFor(element)
                             val expr = exprList.getExprAt(index)
-                            if (expr != null && isConstLiteral(expr) ) {
+                            if (expr != null && isConstLiteral(expr)) {
                                 sb.append("local ${element.name} = ${expr.text}")
                                 sb.append("\n")
                                 return@wrapLanguage
@@ -272,7 +294,7 @@ class LuaDocumentationProvider : DocumentationProvider {
         owner?.let { renderComment(sb, owner.comment) }
     }
 
-    private fun isConstLiteral(element: PsiElement): Boolean{
+    private fun isConstLiteral(element: PsiElement): Boolean {
         return element.node.elementType == LuaTypes.LITERAL_EXPR
     }
 

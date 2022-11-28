@@ -5,6 +5,7 @@ import com.intellij.lang.cacheBuilder.DefaultWordsScanner
 import com.intellij.lexer.FlexAdapter
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.tree.TokenSet
 import com.tang.intellij.lua.lang.LuaLanguageLevel
@@ -12,14 +13,23 @@ import com.tang.intellij.lua.lang.LuaParserDefinition
 import com.tang.intellij.lua.lexer.LuaLexer
 import com.tang.intellij.lua.lexer._LuaLexer
 import com.tang.intellij.lua.parser.LuaParser
-import com.tang.intellij.lua.psi.LuaPsiFile
+import com.tang.intellij.lua.project.LuaSettings
+import com.tang.intellij.lua.psi.*
+import com.tang.intellij.lua.search.SearchContext
 import com.tang.intellij.lua.stubs.IndexSink
-import com.tang.lsp.FileURI
-import com.tang.lsp.ILuaFile
-import com.tang.lsp.Word
+import com.tang.intellij.lua.ty.ITyFunction
+import com.tang.intellij.lua.ty.TyClass
+import com.tang.intellij.lua.ty.findPerfectSignature
+import com.tang.intellij.lua.ty.hasVarargs
+import com.tang.lsp.*
+import com.tang.vscode.RenderRange
 import com.tang.vscode.diagnostics.DiagnosticsService
-import org.eclipse.lsp4j.Diagnostic
-import org.eclipse.lsp4j.DidChangeTextDocumentParams
+import org.eclipse.lsp4j.*
+import org.eclipse.lsp4j.jsonrpc.CancelChecker
+import org.eclipse.lsp4j.jsonrpc.messages.Either
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 internal data class Line(val line: Int, val startOffset: Int, val stopOffset: Int)
 
@@ -28,46 +38,43 @@ class LuaFile(override val uri: FileURI) : VirtualFileBase(uri), ILuaFile, Virtu
     private var _lines = mutableListOf<Line>()
     private var _myPsi: LuaPsiFile? = null
     private var _words: List<Word>? = null
-    private val _diagnostics = mutableListOf<Diagnostic>()
-    private var _completeDiagnostic = false
+    private var _version: Int = 0
+    private var _rwl = ReentrantReadWriteLock()
+    private var _isOpen = false
 
-    override val diagnostics: List<Diagnostic>
-        get() {
-            synchronized(_diagnostics) {
-                return _diagnostics.toList()
-            }
-        }
+    var workspaceDiagnosticResultId: String? = null
 
-    @Synchronized
     override fun didChange(params: DidChangeTextDocumentParams) {
-        if (params.contentChanges.isEmpty())
-            return
+        _rwl.write {
+            if (params.contentChanges.isEmpty())
+                return
 
-        var sb = _text.toString()
-        var offset = 0
-        params.contentChanges.forEach {
-            when {
-                // for TextDocumentSyncKind.Full
-                it.range == null -> sb = it.text
-                // incremental updating
-                it.range.start.line >= _lines.size -> {
-                    sb += it.text
-                    _lines.add(Line(it.range.start.line, it.range.start.character, it.range.end.character))
-                }
-                else -> {
-                    val sline = _lines[it.range.start.line]
-                    val eline = _lines[it.range.end.line]
-                    val spos = sline.startOffset + it.range.start.character
-                    val epos = eline.startOffset + it.range.end.character
-                    sb = sb.replaceRange(spos, epos, it.text)
+            var sb = _text.toString()
+            var offset = 0
+            params.contentChanges.forEach {
+                when {
+                    // for TextDocumentSyncKind.Full
+                    it.range == null -> sb = it.text
+                    // incremental updating
+                    it.range.start.line >= _lines.size -> {
+                        sb += it.text
+                        _lines.add(Line(it.range.start.line, it.range.start.character, it.range.end.character))
+                    }
+                    else -> {
+                        val sline = _lines[it.range.start.line]
+                        val eline = _lines[it.range.end.line]
+                        val spos = sline.startOffset + it.range.start.character
+                        val epos = eline.startOffset + it.range.end.character
+                        sb = sb.replaceRange(spos, epos, it.text)
 
-                    val textSize = it.text.length
-                    offset += textSize - it.rangeLength
+                        val textSize = it.text.length
+                        offset += textSize - it.rangeLength
+                    }
                 }
             }
+            _text = sb
+            onChanged()
         }
-        _text = sb
-        onChanged()
     }
 
     override fun getText(): CharSequence {
@@ -79,20 +86,13 @@ class LuaFile(override val uri: FileURI) : VirtualFileBase(uri), ILuaFile, Virtu
     }
 
     fun setText(str: CharSequence) {
-        _text = str
-        onChanged()
-    }
-
-    override fun diagnose() {
-        synchronized(_diagnostics) {
-            if(!_completeDiagnostic) {
-                DiagnosticsService.diagnosticFile(this, _diagnostics)
-                _completeDiagnostic = true
-            }
+        _rwl.write {
+            _text = str
+            _isOpen = true
+            onChanged()
         }
     }
 
-    @Synchronized
     private fun updateLines() {
         _lines.clear()
         var pos = 0
@@ -120,16 +120,13 @@ class LuaFile(override val uri: FileURI) : VirtualFileBase(uri), ILuaFile, Virtu
     }
 
     private fun onChanged() {
+        ++_version
         updateLines()
         doParser()
     }
 
     private fun doParser() {
         _words = null
-        synchronized(_diagnostics) {
-            _diagnostics.clear()
-            _completeDiagnostic = false
-        }
         unindex()
         val parser = LuaParser()
         val builder = PsiBuilderFactory.getInstance().createBuilder(
@@ -150,7 +147,6 @@ class LuaFile(override val uri: FileURI) : VirtualFileBase(uri), ILuaFile, Virtu
         return _lines.firstOrNull { it.line == line } ?.startOffset ?: 0
     }*/
 
-    @Synchronized
     override fun getLine(offset: Int): Pair<Int, Int> {
         if (_lines.size <= 1) {
             return Pair(0, offset)
@@ -175,20 +171,51 @@ class LuaFile(override val uri: FileURI) : VirtualFileBase(uri), ILuaFile, Virtu
         if (currentLine != null) {
             //如果找到了
             return Pair(currentLine.line, offset - currentLine.startOffset)
-        } else {
+        } else if (lowIndex < _lines.size) {
             // 没找到那么就认为是lowIndex所在行第0个字符,也可以是currentLine所在行最后一个+1字符
             return Pair(_lines[lowIndex].line, 0)
+        } else {
+            return Pair(_lines.lastOrNull()?.line ?: 0, 0)
         }
     }
 
-    @Synchronized
     override fun getPosition(line: Int, char: Int): Int {
         val lineData = _lines.firstOrNull { it.line == line }
-        return if (lineData != null) lineData.startOffset + char else char
+        var pos = if (lineData != null) lineData.startOffset + char else char
+        if (pos >= _text.length) {
+            pos = _text.length
+        }
+        return pos
+    }
+
+    override fun getVersion(): Int {
+        return _version
+    }
+
+    override fun lock(code: () -> Unit) {
+        _rwl.read {
+            code()
+        }
+    }
+
+    fun diagnostic(diagnostics: MutableList<Diagnostic>, checker: CancelChecker?) {
+        DiagnosticsService.diagnosticFile(this, diagnostics, checker)
     }
 
     override val psi: PsiFile?
         get() = _myPsi
+
+    var opened: Boolean
+        get() {
+            _rwl.read {
+                return _isOpen
+            }
+        }
+        set(value) {
+            _rwl.write {
+                _isOpen = value
+            }
+        }
 
     override fun getPsiFile() = _myPsi
 

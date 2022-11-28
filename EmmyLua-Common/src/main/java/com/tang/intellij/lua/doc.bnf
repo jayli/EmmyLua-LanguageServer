@@ -89,7 +89,7 @@
 
 doc ::= (DASHES after_dash?)*
 
-private after_dash ::= doc_item | STRING { recoverWhile=after_dash_recover }
+private after_dash ::= doc_item | doc_field_item | STRING { recoverWhile=after_dash_recover }
 private after_dash_recover ::= !(DASHES)
 private doc_item ::= '@' (tag_param
     | tag_alias
@@ -108,6 +108,7 @@ private doc_item ::= '@' (tag_param
     | tag_def
     | tag_other
     )
+private doc_field_item ::= '|' id_field
 
 ty ::= union_ty | function_ty | table_ty | generic_ty | arr_ty | general_ty | par_ty | string_literal_ty {
     implements = ['com.tang.intellij.lua.comment.psi.LuaDocType']
@@ -210,6 +211,16 @@ tag_field ::= TAG_NAME_FIELD access_modifier? ((('<' class_name_ref '>')? ID nul
     ]
 }
 
+id_field ::= ID comment_string? {
+//    implements = [
+//        "com.tang.intellij.lua.comment.psi.LuaDocPsiElement"
+//        "com.tang.intellij.lua.psi.LuaClassField"
+//        "com.intellij.psi.PsiNameIdentifierOwner"
+//    ]
+
+
+}
+
 //--- tag
 tag_def ::= TAG_NAME_NAME comment_string? {
     pin = 1
@@ -255,7 +266,12 @@ class_name_ref_list ::= class_name_ref (',' class_name_ref)* {
     methods = [getClasses]
 }
 
-tag_class ::= (TAG_NAME_CLASS|TAG_NAME_MODULE|TAG_NAME_ENUM|TAG_NAME_INTERFACE) ID (EXTENDS class_name_ref_list)? comment_string? {
+
+private generic_define_list ::= '<' generic_def (',' generic_def)* '>' {
+    pin = 1
+}
+
+tag_class ::= (TAG_NAME_CLASS|TAG_NAME_MODULE|TAG_NAME_ENUM|TAG_NAME_INTERFACE) ID (generic_define_list)? (EXTENDS class_name_ref_list)? comment_string? {
     pin = 2
     implements = [
         "com.tang.intellij.lua.comment.psi.LuaDocPsiElement"
